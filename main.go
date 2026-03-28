@@ -15,6 +15,7 @@ import ("database/sql"
 	    "errors"
 
 	    "github.com/danarrigo/Chirpy/internal/database"
+	    "github.com/danarrigo/Chirpy/internal/auth"
 		)
 
 type apiConfig struct {
@@ -47,6 +48,7 @@ func main(){
 	serveMux.HandleFunc("POST /api/chirps",apiCfg.handlerCrudOps)
 	serveMux.HandleFunc("GET /api/chirps",apiCfg.handlerChirpGetter)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}",apiCfg.handlerSpecificChirpGetter)
+	serveMux.HandleFunc("POST /api/login",apiCfg.handlerUsersLogin)
 	err=server.ListenAndServe()
 	if err!=nil{
 		print(err)
@@ -127,6 +129,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter,r *http.Request){
 	type Email struct {
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	request:=Email{}
 	decoder:=json.NewDecoder(r.Body)
@@ -134,7 +137,15 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter,r *http.Request){
 		respondWithError(w,400,"Error Decoding")
 		return
 	}
-	user, err := cfg.db.CreateUser(r.Context(), request.Email)
+	hashedPassword,err:=auth.HashPassword(request.Password)
+	if err!=nil{
+			respondWithError(w,http.StatusInternalServerError,"Error Creating User")
+			return
+	}
+	user, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email: request.Email,
+		HashedPassword:hashedPassword,
+	})
 	if err!=nil{
 		respondWithError(w,http.StatusInternalServerError,"Error Creating User")
 		return
@@ -257,4 +268,45 @@ func (cfg *apiConfig)handlerSpecificChirpGetter(w http.ResponseWriter,r *http.Re
 	    Body:      chirp.Body,
 	    UserID:    chirp.UserID,
 	})
+}
+
+func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
+	type Body struct{
+		Password string `json:"password"`;
+		Email string `json:"email"` ;
+	}
+	data:=Body{}
+	decoder:=json.NewDecoder(r.Body)
+	if err:=decoder.Decode(&data); err!=nil{
+		respondWithError(w,400,"error while parsing")
+		return
+	}
+	user, err := cfg.db.GetUserByEmail(r.Context(), data.Email)
+	if err != nil {
+	    respondWithError(w, 401, "Incorrect email or password")
+	    return
+	}
+	booel,err:=auth.CheckPasswordHash(data.Password,user.HashedPassword)
+	if err!=nil{
+		respondWithError(w, 401, "error")
+		return
+	}
+	if booel ==false{
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}else{
+		type response struct {
+		    ID        uuid.UUID `json:"id"`
+		    CreatedAt time.Time `json:"created_at"`
+		    UpdatedAt time.Time `json:"updated_at"`
+		    Email     string    `json:"email"`
+		}
+		respondWithJSON(w,200,response{
+			ID:user.ID,
+			CreatedAt:user.CreatedAt,
+			UpdatedAt:user.UpdatedAt,
+			Email:user.Email,
+		})
+	}
+	
 }
