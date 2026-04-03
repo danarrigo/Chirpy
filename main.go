@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
 	platform string 
+	secret string
 }
 
 
@@ -29,12 +30,13 @@ func main(){
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platformString := os.Getenv("PLATFORM")
+	secretString := os.Getenv("SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err!=nil{
 		log.Fatal(err)
 	}
 	dbQueries := database.New(db)
-	apiCfg := &apiConfig{db:dbQueries,platform:platformString}
+	apiCfg := &apiConfig{db:dbQueries,platform:platformString,secret:secretString}
 	serveMux := http.NewServeMux()
 	server := &http.Server{
 		Handler:serveMux,
@@ -177,14 +179,24 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func (cfg *apiConfig) handlerCrudOps(w http.ResponseWriter,r *http.Request){
+	header:=r.Header;
+	token,err:=auth.GetBearerToken(header);
+	if err!=nil{
+		respondWithError(w,401,"Error generating token")
+		return
+	}
+	id,err:=auth.ValidateJWT(token,cfg.secret);
+	if err!=nil{
+			respondWithError(w,401,"Unauthorized")
+			return
+	}
 	type Payload struct{
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 	decoder:=json.NewDecoder(r.Body)
 	respData:=Payload{}
 	if err:=decoder.Decode(&respData);err!=nil{
-		respondWithError(w,501,"error while decoding")
+		respondWithError(w,400,"error while decoding")
 		return
 	}
 	cleaned, err := validateChirp(respData.Body)
@@ -194,7 +206,7 @@ func (cfg *apiConfig) handlerCrudOps(w http.ResponseWriter,r *http.Request){
 	}
 	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 	    Body:   cleaned,
-	    UserID: respData.UserID,
+	    UserID: id,
 	})
 	if err != nil {
 		    respondWithError(w, http.StatusBadRequest, err.Error())
@@ -274,12 +286,16 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 	type Body struct{
 		Password string `json:"password"`;
 		Email string `json:"email"` ;
+		ExpiresInSeconds int `json:"expires_in_seconds"`;
 	}
 	data:=Body{}
 	decoder:=json.NewDecoder(r.Body)
 	if err:=decoder.Decode(&data); err!=nil{
 		respondWithError(w,400,"error while parsing")
 		return
+	}
+	if data.ExpiresInSeconds == 0 || data.ExpiresInSeconds > 3600 {
+		data.ExpiresInSeconds = 3600;
 	}
 	user, err := cfg.db.GetUserByEmail(r.Context(), data.Email)
 	if err != nil {
@@ -300,12 +316,19 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 		    CreatedAt time.Time `json:"created_at"`
 		    UpdatedAt time.Time `json:"updated_at"`
 		    Email     string    `json:"email"`
+		    Token	  string 	`json:"token"`
+		}
+		token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(data.ExpiresInSeconds)*time.Second)
+		if err != nil {
+		    respondWithError(w, 500, "Error creating JWT")
+		    return
 		}
 		respondWithJSON(w,200,response{
 			ID:user.ID,
 			CreatedAt:user.CreatedAt,
 			UpdatedAt:user.UpdatedAt,
 			Email:user.Email,
+			Token:token,
 		})
 	}
 	
