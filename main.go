@@ -51,6 +51,8 @@ func main(){
 	serveMux.HandleFunc("GET /api/chirps",apiCfg.handlerChirpGetter)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}",apiCfg.handlerSpecificChirpGetter)
 	serveMux.HandleFunc("POST /api/login",apiCfg.handlerUsersLogin)
+	serveMux.HandleFunc("POST /api/refresh",apiCfg.handlerTokenRefresh)
+	serveMux.HandleFunc("POST /api/revoke",apiCfg.handlerTokenRevoke)
 	err=server.ListenAndServe()
 	if err!=nil{
 		print(err)
@@ -286,7 +288,6 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 	type Body struct{
 		Password string `json:"password"`;
 		Email string `json:"email"` ;
-		ExpiresInSeconds int `json:"expires_in_seconds"`;
 	}
 	data:=Body{}
 	decoder:=json.NewDecoder(r.Body)
@@ -294,9 +295,7 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 		respondWithError(w,400,"error while parsing")
 		return
 	}
-	if data.ExpiresInSeconds == 0 || data.ExpiresInSeconds > 3600 {
-		data.ExpiresInSeconds = 3600;
-	}
+	expiresInSeconds := 3600;
 	user, err := cfg.db.GetUserByEmail(r.Context(), data.Email)
 	if err != nil {
 	    respondWithError(w, 401, "Incorrect email or password")
@@ -317,11 +316,24 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 		    UpdatedAt time.Time `json:"updated_at"`
 		    Email     string    `json:"email"`
 		    Token	  string 	`json:"token"`
+		    RefreshToken string `json:"refresh_token"`
 		}
-		token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(data.ExpiresInSeconds)*time.Second)
+		token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(expiresInSeconds)*time.Second)
 		if err != nil {
 		    respondWithError(w, 500, "Error creating JWT")
 		    return
+		}
+		refreshToken:=auth.MakeRefreshToken();
+		err=cfg.db.InsertRefreshToken(r.Context(),database.InsertRefreshTokenParams{
+			Token:refreshToken,
+			CreatedAt:time.Now(),
+			UpdatedAt:time.Now(),
+			UserID:user.ID,	
+			ExpiresAt: time.Now().Add(1440 * time.Hour),
+		})
+		if err!=nil{
+			respondWithError(w, 500, "Error adding data to the database");
+			return;
 		}
 		respondWithJSON(w,200,response{
 			ID:user.ID,
@@ -329,7 +341,49 @@ func (cfg *apiConfig)handlerUsersLogin(w http.ResponseWriter,r *http.Request){
 			UpdatedAt:user.UpdatedAt,
 			Email:user.Email,
 			Token:token,
+			RefreshToken:refreshToken,
 		})
 	}
 	
+}
+
+func (cfg *apiConfig)handlerTokenRefresh(w http.ResponseWriter,r *http.Request){
+	header:=r.Header;
+	refreshToken,err:=auth.GetBearerToken(header);
+	if err!=nil{
+		respondWithError(w,400,"Error generating token")
+		return
+	}
+	user,err:=cfg.db.GetUserFromRefreshToken(r.Context(),refreshToken);
+	if err!=nil{
+		respondWithError(w, 401, "Error finding user with specific token");
+		return;
+	}
+	jwtToken,err:=auth.MakeJWT(user.ID, cfg.secret, time.Hour)
+	if err!=nil{
+		respondWithError(w,400,"Error generating token")
+		return
+	}
+	type tokenStruct struct {
+		Token string `json:"token"`
+	}
+	respondWithJSON(w,200,tokenStruct{Token:jwtToken})
+	
+}
+
+func (cfg *apiConfig)handlerTokenRevoke(w http.ResponseWriter,r *http.Request){
+	header:=r.Header;
+	token,err:=auth.GetBearerToken(header);
+	if err!=nil{
+		respondWithError(w,400,"Error getting token")
+		return
+	}
+	_,err=cfg.db.RevokeRefreshToken(r.Context(),token)
+	if err!=nil{
+		respondWithError(w,500,"Token not valid")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return
+
 }
