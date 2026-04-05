@@ -53,6 +53,7 @@ func main(){
 	serveMux.HandleFunc("POST /api/login",apiCfg.handlerUsersLogin)
 	serveMux.HandleFunc("POST /api/refresh",apiCfg.handlerTokenRefresh)
 	serveMux.HandleFunc("POST /api/revoke",apiCfg.handlerTokenRevoke)
+	serveMux.HandleFunc("PUT /api/users",apiCfg.handlerChirpUpdater)
 	err=server.ListenAndServe()
 	if err!=nil{
 		print(err)
@@ -386,4 +387,53 @@ func (cfg *apiConfig)handlerTokenRevoke(w http.ResponseWriter,r *http.Request){
 	w.WriteHeader(http.StatusNoContent)
 	return
 
+}
+
+func (cfg *apiConfig)handlerChirpUpdater(w http.ResponseWriter,r *http.Request){
+	header:=r.Header;
+	token,err:=auth.GetBearerToken(header);
+	if err!=nil{
+		respondWithError(w,401,"Error getting token")
+		return
+	}
+	id,err:=auth.ValidateJWT(token,cfg.secret);
+	if err!=nil{
+			respondWithError(w,401,"Error validating token")
+			return
+	}
+	type requestStruct struct {
+			Password string `json:"password"`
+			Email string `json:"email"`
+		}
+	data:=requestStruct{};
+	decoder:=json.NewDecoder(r.Body)
+	if err=decoder.Decode(&data);err!=nil{
+		respondWithError(w,400,"Error decoding body")
+		return
+	}
+	hashedPassword,err:=auth.HashPassword(data.Password);
+	if err!=nil{
+			respondWithError(w,400,"Error hashing password")
+			return
+	}
+	user,err:=cfg.db.UpdateUser(r.Context(),database.UpdateUserParams{
+		ID:id,
+		HashedPassword:hashedPassword,
+		Email:data.Email,
+	})
+	if err!=nil{
+		respondWithError(w,401,"Error updating db")
+		return 
+	}
+	respondWithJSON(w, http.StatusOK, struct {
+	    ID           uuid.UUID    `json:"id"`
+	    CreatedAt    time.Time `json:"created_at"`
+	    UpdatedAt    time.Time `json:"updated_at"`
+	    Email        string    `json:"email"`
+	}{
+	    ID:           user.ID,
+	    CreatedAt:    user.CreatedAt,
+	    UpdatedAt:    user.UpdatedAt,
+	    Email:        user.Email,
+	})
 }
