@@ -79,3 +79,17 @@ func MakeRefreshToken() string {
 	return refreshString;
 }
 
+func GetAPIKey(headers http.Header) (string, error){
+	value:=headers.Get("Authorization")
+	if value==""{
+			return "",errors.New("No Authorization Header Set")
+	}
+	split_value := strings.Split(value," ");
+		if len(split_value)==2{
+			if split_value[0]=="ApiKey"{
+				apiString:=split_value[1];
+				return apiString,nil
+			}
+		}
+	return "",errors.New("Error with Header Format")
+}
